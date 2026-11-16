@@ -28,5 +28,13 @@ python3 tree.py      # 끝내기: Ctrl+C
 
 
 
+https://github.com/user-attachments/assets/5b29e218-a693-40c9-8657-9322a2795727
+
+
+
+
+
+
+
 
 
