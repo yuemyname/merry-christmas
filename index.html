@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>터미널 크리스마스트리</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: 화면을 채우는 터미널 창 하나. 명령을 치면 같은 창 안에서 트리가 전체 화면 TUI 처럼 재생돼요. */
+:root {
+  --desk: #07090d;      /* 창 바깥 */
+  --win: #0d1016;       /* 터미널 바탕 */
+  --bar: #161a22;       /* 제목 막대 */
+  --line: #252b36;      /* 테두리 */
+  --text: #d5dbe5;      /* 기본 글자 */
+  --dim: #7c8596;       /* 흐린 글자 */
+  --prompt: #7ee38f;    /* 프롬프트 초록 */
+  --gold: #ffcc3a;      /* 강조 금색 */
+  --err: #ff7b72;       /* 오류 */
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  margin: 0;
+  box-sizing: border-box;
+  background: var(--desk);
+  color: var(--text);
+  font-family: var(--mono);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px;
+  display: flex;
+}
+.term {
+  flex: 1;
+  min-width: 0;
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--win);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .55);
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--dim);
+}
+.dots { display: flex; gap: 7px; flex: 0 0 auto; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: #3a404c; display: block; }
+.dots i:nth-child(1) { background: #c9514a; }
+.dots i:nth-child(2) { background: #c99a3a; }
+.dots i:nth-child(3) { background: #4f9a4f; }
+.title { flex: 1; min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stop {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: #232936;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.stop:hover { background: #2c3443; }
+.stop:focus-visible, .suggest:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.bar .spacer { width: 47px; flex: 0 0 auto; }
+.screen { flex: 1; min-height: 0; position: relative; background: #000; }
+.log {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+  font-size: 14px;
+  line-height: 1.55;
+  cursor: text;
+}
+.log p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.dim { color: var(--dim); }
+.gold { color: var(--gold); }
+.err { color: var(--err); }
+.ps { color: var(--prompt); }
+.row { display: flex; gap: 1ch; align-items: baseline; }
+#cmd {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  caret-color: var(--prompt);
+}
+.suggest {
+  font: inherit;
+  color: var(--gold);
+  background: transparent;
+  border: 1px dashed #5a4a1e;
+  border-radius: 6px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.suggest:hover { background: #1b1708; }
+canvas { position: absolute; display: block; background: #000; }
+@media (max-width: 600px) {
+  .log { font-size: 12.5px; padding: 12px; }
+  .bar .spacer { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="term" id="term">
+  <div class="bar">
+    <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="title" id="title">~ — zsh — 96×54</div>
+    <button class="stop" id="stop" type="button" hidden>^C 끝내기</button>
+    <span class="spacer" id="spacer" aria-hidden="true"></span>
+  </div>
+  <div class="screen" id="screen">
+    <div class="log" id="log" aria-live="polite">
+      <div id="out"></div>
+      <div class="row"><span class="ps">~ $</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="명령어 입력"></div>
+    </div>
+    <canvas id="cv" hidden aria-label="글자로 그린 3D 크리스마스트리 애니메이션"></canvas>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ═══════════════════════ 색 팔레트 (tree.py 와 같아요) ═══════════════════════
+const col = (r, g, b) => [r / 255, g / 255, b / 255];
+const TREE_DARK = col(16, 78, 38), TREE_LIGHT = col(92, 196, 84), TREE_SNOW = col(230, 242, 255);
+const TRUNK = col(118, 72, 38), GROUND_SNOW = col(214, 228, 246), SWIRL = col(228, 240, 255);
+const FLASH = col(255, 252, 236), RED = col(216, 30, 42), GOLD = col(240, 178, 38), SILVER = col(196, 204, 220);
+const BULB_WARM = col(255, 222, 160), BULB_RED = col(255, 58, 48), BULB_GOLD = col(255, 186, 40), BULB_GREEN = col(70, 255, 112);
+const STAR_GOLD = col(255, 204, 58), STAR_RAY = col(255, 232, 150), PINK = col(255, 104, 182);
+const GIFT_WHITE = col(236, 236, 242), GIFT_RED = col(204, 34, 46), GIFT_GREEN = col(36, 150, 72);
+const GIFT_GOLD = col(226, 170, 44), GIFT_BLUE = col(52, 102, 222), GIFT_PINK = col(238, 120, 176);
+const RIBBON_GOLD = col(255, 208, 70), RIBBON_RED = col(226, 36, 52), RIBBON_SILVER = col(226, 232, 244);
+const SNOW = col(238, 244, 255);
+const SKY_STAR_COLORS = [col(210, 222, 255), col(255, 246, 228), col(255, 228, 180), col(186, 204, 255)];
+const MILKY_WAY = col(112, 122, 214), MILKY_WAY_2 = col(176, 112, 196);
+const PLANET_SILVER = col(204, 208, 220), PLANET_RING = col(222, 206, 172);
+const PLANET_BLUE = col(66, 140, 255), PLANET_PURPLE = col(164, 92, 226);
+
+// ═══════════════════════ 개수 · 속도 · 순서 ═══════════════════════
+const N_SKY_STARS = 500, N_ORNAMENTS = 34, N_LIGHTS = 280, LIGHT_TURNS = 5.5;
+const N_HEARTS = 10, N_SNOW = 180, SNOW_HEART_RATIO = 0.15, ROT_PERIOD = 17, FPS = 30, HOLD_TIME = 6;
+const T_GROUND = 0, D_GROUND = 1.1, T_SWIRL = 0.8, D_SWIRL = 3.1, T_BURST = T_SWIRL + D_SWIRL, D_BURST = 0.8;
+const T_ORN = 4.5, D_ORN = 1.8, ORN_POP = 0.25, T_LIGHTS = 6.1, D_LIGHTS = 1.8, T_STAR = 7.8, D_STAR = 0.7;
+const T_HEARTS = 8.4, D_HEARTS = 1.1, T_GIFTS = 9.3, D_GIFTS = 1.6, GIFT_RISE = 0.5, T_SNOW = 10.4;
+const T_DONE = T_GIFTS + D_GIFTS * 5 / 6 + GIFT_RISE, LOOP = T_DONE + HOLD_TIME;
+
+// ═══════════════════════ 화면 · 카메라 ═══════════════════════
+const W = 96, H = 54, SX = 32, SY = 16, CX = W / 2, CY = 26.5, PIVOT = 0.95, PITCH = 0.24, CAM_D = 7;
+const RAMP = " .,:;-=+*#%@", CHARS = [...RAMP, "♥"], HEART = RAMP.length;
+const TAU = Math.PI * 2, CP = Math.cos(PITCH), SPt = Math.sin(PITCH);
+const unit = v => { const l = Math.hypot(...v); return v.map(x => x / l); };
+const L = unit([-0.55, 0.62, -0.56]);
+const HF = unit([L[0], L[1], L[2] - 1]);
+
+const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+const easeOut = x => { x = clamp01(x); return 1 - (1 - x) ** 3; };
+const backOut = x => { x = clamp01(x); const c1 = 1.70158; return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
+const rotAngle = T => TAU * T / ROT_PERIOD;
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rand = mulberry32(1225);
+const U = (a, b) => a + (b - a) * rand();
+const N01 = () => Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(TAU * rand());
+const nrm3 = (x, y, z) => { const l = Math.hypot(x, y, z) || 1e-9; return [x / l, y / l, z / l]; };
+
+// ═══════════════════════ 모양 만들기 (처음 한 번) ═══════════════════════
+const TIERS = [[0.16, 1.04, 0.95], [0.74, 1.38, 0.70], [1.05, 1.68, 0.52], [1.38, 1.98, 0.33]];
+const TREE_TOP = 1.98, SWIRL_H = TREE_TOP + 0.06, STAR_Y = TREE_TOP + 0.10, STAR_R = 0.21;
+const GROUND_R = 1.35, ORN_R = 0.075;
+
+function tierRadius(y) {
+  let r = 0;
+  for (const [yb, yt, rb] of TIERS) { const t = (yt - y) / (yt - yb); if (t >= 0 && t <= 1) r = Math.max(r, rb * t); }
+  return r;
+}
+function PS() { return { P: [], N: [], C: [], X: [] }; }
+function push(ps, p, n, c, x) {
+  ps.P.push(p[0], p[1], p[2]); ps.N.push(n[0], n[1], n[2]); ps.C.push(c[0], c[1], c[2]);
+  if (x !== undefined) ps.X.push(x);
+}
+function fin(ps) {
+  return { n: ps.P.length / 3, P: new Float32Array(ps.P), N: new Float32Array(ps.N), C: new Float32Array(ps.C), X: new Float32Array(ps.X) };
+}
+function fibSphere(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const k = i + 0.5, phi = Math.acos(1 - 2 * k / n), th = Math.PI * (1 + Math.sqrt(5)) * k;
+    out.push([Math.cos(th) * Math.sin(phi), Math.cos(phi), Math.sin(th) * Math.sin(phi)]);
+  }
+  return out;
+}
+
+function buildTree() {
+  const ps = PS();
+  const areas = TIERS.map(([yb, yt, rb]) => Math.PI * rb * Math.hypot(rb, yt - yb));
+  const sum = areas.reduce((a, b) => a + b, 0);
+  TIERS.forEach(([yb, yt, rb], ti) => {
+    const n = Math.floor(14000 * areas[ti] / sum), h = yt - yb;
+    for (let i = 0; i < n; i++) {
+      const phi = U(0, TAU);
+      const hem = 1 - 0.10 * (0.5 + 0.5 * Math.sin(9 * phi + 1.7 * ti)) ** 2;
+      const t = Math.sqrt(rand()) * hem;
+      const bump = 1 + 0.045 * Math.sin(15 * phi + 22 * t + ti) - U(0, 0.07);
+      const r = rb * t * bump, y = yt - t * h - 0.05 * t ** 8;
+      const nn = nrm3(h * Math.cos(phi), rb, h * Math.sin(phi));
+      let nx = nn[0] + 0.28 * N01(), ny = nn[1] + 0.28 * N01(), nz = nn[2] + 0.28 * N01();
+      const m = clamp01(0.55 * rand() + 0.3 * (0.5 + 0.5 * Math.sin(11 * phi + 17 * t + ti)) + 0.25 * t - 0.1);
+      let c = [0, 1, 2].map(j => TREE_DARK[j] + (TREE_LIGHT[j] - TREE_DARK[j]) * m);
+      if (ti + 1 < TIERS.length) {                       // 위층 치맛단 밑 그늘 → 층이 보이게
+        const f = 0.3 + 0.7 * clamp01((r - TIERS[ti + 1][2]) / 0.16);
+        c = c.map(v => v * f);
+      }
+      const edge = clamp01((t / hem - 0.8) / 0.2), hs = ti === 0 ? 0.08 : 0.35;
+      if (rand() < edge * edge * hs * (0.55 + 0.45 * Math.sin(7 * phi + 2 * ti)) + 0.012) {
+        const k = 0.88 + 0.12 * rand(); c = TREE_SNOW.map(v => v * k); ny += 0.9;
+      }
+      push(ps, [r * Math.cos(phi), y, r * Math.sin(phi)], nrm3(nx, ny, nz), c);
+    }
+  });
+  for (let i = 0; i < 1400; i++) {                       // 갈색 기둥
+    const phi = U(0, TAU), y = U(0, 0.55);
+    const bark = 0.72 + 0.18 * Math.sin(phi * 9 + y * 30) + 0.1 * rand();
+    push(ps, [0.11 * Math.cos(phi), y, 0.11 * Math.sin(phi)],
+      nrm3(Math.cos(phi) + 0.15 * N01(), 0.15 * N01(), Math.sin(phi) + 0.15 * N01()), TRUNK.map(v => v * bark));
+  }
+  return fin(ps);
+}
+
+function buildGround() {
+  const ps = PS(), R2 = GROUND_R * GROUND_R;
+  for (let i = 0; i < 9000; i++) {
+    const phi = U(0, TAU), rn = Math.sqrt(rand());
+    const edge = 1 + 0.04 * Math.sin(5 * phi) + 0.03 * Math.sin(9 * phi + 1);
+    const r = GROUND_R * edge * rn, x = r * Math.cos(phi), z = r * Math.sin(phi);
+    const y = 0.02 * Math.sin(6 * x + 1) * Math.sin(5 * z) + 0.04 * (1 - r * r / R2);
+    const dydx = 0.12 * Math.cos(6 * x + 1) * Math.sin(5 * z) - 0.08 * x / R2;
+    const dydz = 0.10 * Math.sin(6 * x + 1) * Math.cos(5 * z) - 0.08 * z / R2;
+    const ao = 0.55 + 0.45 * clamp01((r - 0.15) / 0.75), k = (0.92 + 0.08 * rand()) * ao;
+    push(ps, [x, y, z], nrm3(-dydx + 0.12 * N01(), 1 + 0.12 * N01(), -dydz + 0.12 * N01()), GROUND_SNOW.map(v => v * k), rn);
+  }
+  for (let i = 0; i < 1500; i++) {                       // 땅 가장자리 두께
+    const phi = U(0, TAU), er = GROUND_R * (1 + 0.04 * Math.sin(5 * phi) + 0.03 * Math.sin(9 * phi + 1));
+    const k = 0.85 + 0.1 * rand();
+    push(ps, [er * Math.cos(phi), U(-0.05, 0), er * Math.sin(phi)], nrm3(Math.cos(phi), 0.3, Math.sin(phi)), GROUND_SNOW.map(v => v * k), 1);
+  }
+  return fin(ps);
+}
+
+const GIFT_DEFS = [
+  [0.34, 0.26, 0.30, GIFT_RED, RIBBON_GOLD], [0.24, 0.32, 0.24, GIFT_WHITE, RIBBON_RED],
+  [0.40, 0.18, 0.28, GIFT_GREEN, RIBBON_GOLD], [0.22, 0.22, 0.22, GIFT_GOLD, RIBBON_RED],
+  [0.30, 0.24, 0.34, GIFT_BLUE, RIBBON_SILVER], [0.20, 0.34, 0.20, GIFT_PINK, RIBBON_SILVER],
+];
+const GIFT_SLOTS = [0, 1, 2, 3, 4, 5].map(k => [(20 + 60 * k) * Math.PI / 180, k % 2 === 0 ? 1.00 : 1.08]);
+const RIBBON_W = 0.03;
+
+function buildBox(w, h, d, body, ribbon) {
+  const ps = PS(), dens = 4500;
+  const add = (p, n, rib) => {
+    const k = 0.92 + 0.08 * rand();
+    push(ps, p, n, rib ? ribbon : body.map(v => v * k), rib ? 0.5 : 0.12);
+  };
+  let n = Math.floor(w * d * dens);
+  for (let i = 0; i < n; i++) { const x = U(-w / 2, w / 2), z = U(-d / 2, d / 2); add([x, h, z], [0, 1, 0], Math.abs(x) < RIBBON_W || Math.abs(z) < RIBBON_W); }
+  for (const s of [1, -1]) {
+    n = Math.floor(d * h * dens);
+    for (let i = 0; i < n; i++) { const z = U(-d / 2, d / 2), y = U(0, h); add([s * w / 2, y, z], [s, 0, 0], Math.abs(z) < RIBBON_W || Math.abs(y - h / 2) < RIBBON_W * 0.8); }
+  }
+  for (const s of [1, -1]) {
+    n = Math.floor(w * h * dens);
+    for (let i = 0; i < n; i++) { const x = U(-w / 2, w / 2), y = U(0, h); add([x, y, s * d / 2], [0, 0, s], Math.abs(x) < RIBBON_W || Math.abs(y - h / 2) < RIBBON_W * 0.8); }
+  }
+  const sph = fibSphere(70);                             // 위에 매듭 (고리 두 개 + 가운데 매듭)
+  for (const [sc, ctr] of [[[0.062, 0.042, 0.03], [0.052, h + 0.032, 0]], [[0.062, 0.042, 0.03], [-0.052, h + 0.032, 0]], [[0.028, 0.026, 0.028], [0, h + 0.022, 0]]]) {
+    for (const s of sph) push(ps, [s[0] * sc[0] + ctr[0], s[1] * sc[1] + ctr[1], s[2] * sc[2] + ctr[2]], nrm3(s[0] / sc[0], s[1] / sc[1], s[2] / sc[2]), ribbon, 0.6);
+  }
+  return fin(ps);
+}
+
+const TREE = buildTree();
+const GRD = buildGround();
+const ORN = (() => {
+  const ctr = [], cl = [], sp = [];
+  for (let i = 0; i < N_ORNAMENTS; i++) {
+    const y = 0.30 + (1.82 - 0.30) * i / (N_ORNAMENTS - 1) + U(-0.03, 0.03);
+    const phi = i * 2.39996 + U(-0.3, 0.3), r = tierRadius(y) + 0.02;
+    ctr.push([r * Math.cos(phi), y, r * Math.sin(phi)]);
+    cl.push([RED, GOLD, SILVER][i % 3]); sp.push([0.7, 0.8, 1.1][i % 3]);
+  }
+  const w = [], ph = [];
+  for (let i = 0; i < N_ORNAMENTS; i++) w.push(U(1.5, 4.0));
+  for (let i = 0; i < N_ORNAMENTS; i++) ph.push(U(0, TAU));
+  return { ctr, cl, sp, w, ph };
+})();
+const SPHERE = fibSphere(90);
+const LT = (() => {
+  const u = [], P = [], C = [], w = [], ph = [];
+  const pal = [BULB_WARM, BULB_RED, BULB_GOLD, BULB_GREEN];
+  for (let i = 0; i < N_LIGHTS; i++) {
+    const uu = i / (N_LIGHTS - 1), y = 0.22 + uu * 1.71, phi = uu * LIGHT_TURNS * TAU, r = tierRadius(y) + 0.03;
+    u.push(uu); P.push([r * Math.cos(phi), y, r * Math.sin(phi)]); C.push(pal[i % 4]);
+  }
+  for (let i = 0; i < N_LIGHTS; i++) w.push(U(2.0, 6.5));
+  for (let i = 0; i < N_LIGHTS; i++) ph.push(U(0, TAU));
+  return { u, P, C, w, ph };
+})();
+const GIFTS = GIFT_DEFS.map(g => buildBox(...g));
+
+const SKY = (() => {
+  const th = 27 * Math.PI / 180;
+  let n = new Float32Array(W * H);
+  for (let i = 0; i < n.length; i++) n[i] = rand();
+  const at = (a, r, c) => a[((r + H) % H) * W + ((c + W) % W)];
+  for (let it = 0; it < 4; it++) {
+    const m = new Float32Array(W * H);
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      m[r * W + c] = (at(n, r, c) + at(n, r - 1, c) + at(n, r + 1, c) + at(n, r, c - 1) + at(n, r, c + 1) + at(n, r, c - 2) + at(n, r, c + 2)) / 7;
+    }
+    n = m;
+  }
+  let lo = Infinity, hi = -Infinity;
+  for (const v of n) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const milky = new Float32Array(W * H * 3);
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const i = r * W + c, nv = (n[i] - lo) / (hi - lo);
+    const sd = (c - W * 0.5) * Math.sin(th) + (r - H * 0.42) * 2 * Math.cos(th);
+    let inten = Math.exp(-((sd / 11) ** 2)) * (0.25 + 0.95 * nv ** 1.5) * 0.10;
+    inten *= 1 - 0.55 * Math.exp(-(((sd - 1.5) / 2.2) ** 2));
+    const mx = clamp01(c / W);
+    for (let j = 0; j < 3; j++) milky[i * 3 + j] = inten * (MILKY_WAY[j] * (1 - mx) + MILKY_WAY_2[j] * mx);
+  }
+  const idx = [...Array(W * H).keys()];
+  for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+  const cell = idx.slice(0, N_SKY_STARS);
+  const base = cell.map(() => 0.10 + 0.75 * rand() ** 2.4);
+  const scol = cell.map(() => SKY_STAR_COLORS[Math.floor(rand() * SKY_STAR_COLORS.length)]);
+  const w = cell.map(() => U(0.6, 4.5)), ph = cell.map(() => U(0, TAU));
+  return { milky, cell, base, scol, w, ph };
+})();
+
+const PLANETS = [
+  { cx: 15.0, cy: 9.0, rad: 6.5, color: PLANET_SILVER, ring: true, tilt: -0.38, band: 0.06, freq: 9, ph: 0 },
+  { cx: 84.5, cy: 10.0, rad: 6.0, color: PLANET_BLUE, ring: false, tilt: 0, band: 0.12, freq: 7, ph: 1.7 },
+  { cx: 8.5, cy: 29.0, rad: 3.6, color: PLANET_PURPLE, ring: false, tilt: 0, band: 0.10, freq: 10, ph: 3.1 },
+];
+
+const SNOWF = (() => {
+  const S = { x: [], z: [], y0: [], v: [], w: [], ph: [], heart: [], e: [] };
+  const fill = (k, f) => { for (let i = 0; i < N_SNOW; i++) S[k].push(f()); };
+  fill("x", () => U(-1.7, 1.7)); fill("z", () => U(-1.3, 1.3)); fill("y0", () => U(0, 5));
+  fill("v", () => U(0.22, 0.45)); fill("w", () => U(0.6, 1.6)); fill("ph", () => U(0, TAU));
+  fill("heart", () => rand() < SNOW_HEART_RATIO); fill("e", () => T_SNOW + rand() * 1.0);
+  return S;
+})();
+
+function newLoopState(loopIdx) {
+  const loopStart = loopIdx * LOOP, r = mulberry32(loopIdx * 10 + 7);
+  const ys = [];
+  for (let i = 0; i < N_HEARTS; i++) ys.push(0.40 + (1.75 - 0.40) * i / Math.max(N_HEARTS - 1, 1));
+  for (let i = ys.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [ys[i], ys[j]] = [ys[j], ys[i]]; }
+  const hearts = ys.map((y, i) => {
+    const ti = T_HEARTS + i * D_HEARTS / N_HEARTS;
+    const phi = rotAngle(loopStart + ti + 0.4) - Math.PI / 2 + (r() * 2 - 1);
+    const rr = tierRadius(y) + 0.05;
+    return [rr * Math.cos(phi), y, rr * Math.sin(phi)];
+  });
+  const used = new Set(), order = [];
+  for (let gi = 0; gi < GIFT_DEFS.length; gi++) {
+    const A = rotAngle(loopStart + T_GIFTS + gi * D_GIFTS / GIFT_DEFS.length + 0.3);
+    let best = -1, bv = Infinity;
+    for (let k = 0; k < GIFT_SLOTS.length; k++) {
+      if (used.has(k)) continue;
+      const v = Math.sin(GIFT_SLOTS[k][0] - A);
+      if (v < bv) { bv = v; best = k; }
+    }
+    used.add(best); order.push(best);
+  }
+  return { hearts, giftSlot: order };
+}
+
+// ═══════════════════════ 한 장면 그리기 ═══════════════════════
+const zbuf = new Float32Array(W * H), scol = new Float32Array(W * H * 3), glow = new Float32Array(W * H * 3);
+const bg = new Float32Array(W * H * 3), special = new Int8Array(W * H);
+const outIdx = new Uint8Array(W * H), outRGB = new Uint8ClampedArray(W * H * 3);
+const GMAX = 60000;
+const gc = new Float32Array(GMAX), gr = new Float32Array(GMAX), gz = new Float32Array(GMAX);
+const gR = new Float32Array(GMAX), gG = new Float32Array(GMAX), gB = new Float32Array(GMAX), gh = new Uint8Array(GMAX);
+let gN = 0, ovl = [];
+
+let RC = 1, RS = 0, VX = 0, VY = 0, VZ = 0, NX = 0, NY = 0, NZ = 0, PC = 0, PR = 0, OR = 0, OG = 0, OB = 0;
+function setRot(a) { RC = Math.cos(a); RS = Math.sin(a); }
+function xf(px, py, pz, pivot = PIVOT) {
+  const x = px * RC + pz * RS, z = -px * RS + pz * RC, y = py - pivot;
+  VX = x; VY = y * CP + z * SPt; VZ = -y * SPt + z * CP;
+}
+function xfn(nx, ny, nz) {
+  const x = nx * RC + nz * RS, z = -nx * RS + nz * RC;
+  NX = x; NY = ny * CP + z * SPt; NZ = -ny * SPt + z * CP;
+}
+function proj() { const k = CAM_D / (CAM_D + VZ); PC = CX + VX * SX * k; PR = CY - VY * SY * k; }
+function shade(r, g, b, amb = 0.22, dif = 0.92, spec = 0, shin = 18) {
+  let lam = NX * L[0] + NY * L[1] + NZ * L[2]; if (lam < 0) lam = 0;
+  const f = amb + dif * lam; OR = r * f; OG = g * f; OB = b * f;
+  if (spec) { const hh = NX * HF[0] + NY * HF[1] + NZ * HF[2]; if (hh > 0) { const s = spec * hh ** shin; OR += s; OG += s; OB += s; } }
+}
+function solidAt(cf, rf, z, R, G, B) {
+  const c = Math.floor(cf), r = Math.floor(rf);
+  if (c < 0 || c >= W || r < 0 || r >= H) return;
+  const i = r * W + c;
+  if (z < zbuf[i]) { zbuf[i] = z; scol[i * 3] = R; scol[i * 3 + 1] = G; scol[i * 3 + 2] = B; }   // 가까운 점이 이겨요
+}
+function solid(R, G, B) { proj(); solidAt(PC, PR, VZ, R, G, B); }
+function glowAt(cf, rf, z, R, G, B, halo = true) {
+  if (gN >= GMAX) return;
+  gc[gN] = cf; gr[gN] = rf; gz[gN] = z; gR[gN] = R; gG[gN] = G; gB[gN] = B; gh[gN] = halo ? 1 : 0; gN++;
+}
+function glowV(R, G, B, halo = true) { proj(); glowAt(PC, PR, VZ, R, G, B, halo); }
+
+function drawPlanet(p, T) {
+  const pc = p.cx + 0.7 * Math.sin(T * TAU / 9 + p.ph), pr = p.cy + 0.6 * Math.sin(T * TAU / 6.5 + p.ph * 1.3);
+  const rx = p.rad, ry = rx * 0.5, ext = p.ring ? 2.3 : 1.4;
+  const c0 = Math.max(0, Math.trunc(pc - rx * ext) - 1), c1 = Math.min(W, Math.trunc(pc + rx * ext) + 2);
+  const r0 = Math.max(0, Math.trunc(pr - ry * ext) - 1), r1 = Math.min(H, Math.trunc(pr + ry * ext) + 2);
+  const ca = Math.cos(p.tilt), sa = Math.sin(p.tilt);
+  for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) {
+    const dx = (c + 0.5 - pc) / rx, dy = (r + 0.5 - pr) / ry, d2 = dx * dx + dy * dy, inside = d2 < 1, i = r * W + c;
+    const nz = -Math.sqrt(clamp01(1 - d2));
+    const lam = Math.max(0, dx * L[0] - dy * L[1] + nz * L[2]);
+    if (inside) {                                        // 한쪽만 밝게
+      const tex = 1 + p.band * Math.sin(dy * p.freq + 1.5 * Math.sin(dx * 2.3 + p.ph));
+      const lum = 0.035 + 1.05 * lam ** 0.85 * tex;
+      for (let j = 0; j < 3; j++) bg[i * 3 + j] = p.color[j] * lum;
+      special[i] = -1;
+    }
+    if (p.ring) {
+      const u = dx * ca + dy * sa, v = (-dx * sa + dy * ca) / 0.30, rad = Math.hypot(u, v);
+      const ring = rad > 1.35 && rad < 2.2 && !(rad > 1.72 && rad < 1.80);
+      if (ring && (v > 0 || !inside)) {                  // 뒤쪽 고리는 행성에 가려요
+        const rb = (0.45 + 0.35 * (0.5 + 0.5 * Math.sin(rad * 21))) * (0.75 + 0.35 * Math.max(-1, Math.min(1, -u / 2.2)));
+        for (let j = 0; j < 3; j++) bg[i * 3 + j] = PLANET_RING[j] * rb;
+        special[i] = -1;
+      }
+    } else if (!inside && d2 < 1.45) {                   // 옅은 대기 빛
+      const g = 0.16 * (1 - (d2 - 1) / 0.45) * (0.4 + clamp01(-dx));
+      for (let j = 0; j < 3; j++) bg[i * 3 + j] = Math.max(bg[i * 3 + j], p.color[j] * g);
+    }
+  }
+}
+function drawSky(T) {
+  bg.set(SKY.milky); special.fill(-1);
+  for (let k = 0; k < SKY.cell.length; k++) {           // 별마다 다른 속도로 깜빡
+    const tw = 0.5 + 0.5 * Math.sin(SKY.w[k] * T + SKY.ph[k]);
+    const b = SKY.base[k] * (0.25 + 0.75 * tw), i = SKY.cell[k], c = SKY.scol[k];
+    for (let j = 0; j < 3; j++) bg[i * 3 + j] = Math.max(bg[i * 3 + j], c[j] * b);
+    if (b > 0.62) special[i] = 8; else if (b > 0.45) special[i] = 7;
+  }
+  for (const p of PLANETS) drawPlanet(p, T);
+}
+
+function drawGround(tl) {
+  const e = easeOut((tl - T_GROUND) / D_GROUND);
+  if (e <= 0) return;
+  const settle = 1 - clamp01((tl - T_GROUND - D_GROUND) / 0.3);
+  const { P, N, C, X } = GRD;
+  for (let i = 0; i < GRD.n; i++) {
+    if (X[i] > e + 1e-6) continue;                       // 가운데부터 퍼지기
+    const a = i * 3;
+    xf(P[a], P[a + 1], P[a + 2]); xfn(N[a], N[a + 1], N[a + 2]);
+    shade(C[a], C[a + 1], C[a + 2], 0.24, 0.72);
+    const ed = Math.exp(-(e - X[i]) / 0.05) * settle * 0.6;
+    solid(OR + ed, OG + ed, OB + ed);
+  }
+}
+function drawTree(tl) {
+  const s = clamp01((tl - T_SWIRL) / D_SWIRL);
+  if (s <= 0) return;
+  const yh = s * SWIRL_H, { P, N, C } = TREE;
+  for (let i = 0; i < TREE.n; i++) {
+    const a = i * 3, y = P[a + 1];
+    if (y > yh) continue;                                // 회오리가 지나간 높이까지
+    xf(P[a], y, P[a + 2]); xfn(N[a], N[a + 1], N[a + 2]);
+    shade(C[a], C[a + 1], C[a + 2]);
+    const born = T_SWIRL + y / SWIRL_H * D_SWIRL;
+    const w = Math.exp(-Math.max(tl - born, 0) / 0.28), wh = w * 1.25;   // 방금 생긴 곳은 하얗게
+    solid(OR * (1 - w) + wh, OG * (1 - w) + wh, OB * (1 - w) + wh);
+  }
+}
+function drawSwirl(tl) {
+  const sRaw = (tl - T_SWIRL) / D_SWIRL;
+  if (sRaw < 0) return;
+  const fade = sRaw <= 1 ? 1 : Math.max(0, 1 - (tl - T_BURST) / 0.35);
+  if (fade <= 0) return;
+  const s = Math.min(sRaw, 1), trail = 0.26;
+  for (let k = 0; k < 2; k++) {
+    const pts = [];
+    for (let j = 0; j < 150; j++) {
+      const u = s - trail + trail * j / 149;
+      if (u < 0) continue;
+      const f = (u - (s - trail)) / trail, y = u * SWIRL_H, rad = 0.98 * (1 - y / 2.15) + 0.14;
+      const phi = k * Math.PI + u * 3.2 * TAU;
+      xf(rad * Math.cos(phi), y, rad * Math.sin(phi));
+      const I = f ** 1.6 * 1.1 * fade;
+      glowV(SWIRL[0] * I, SWIRL[1] * I, SWIRL[2] * I);
+      pts.push([VX, VY, VZ, f]);
+    }
+    if (!pts.length) continue;
+    const hd = pts[pts.length - 1];
+    VX = hd[0]; VY = hd[1]; VZ = hd[2];
+    glowV(SWIRL[0] * 1.4 * fade, SWIRL[1] * 1.4 * fade, SWIRL[2] * 1.4 * fade);   // 밝은 머리
+    if (pts.length > 4) for (let q = 0; q < 8; q++) {     // 흩날리는 반짝이
+      const p = pts[Math.floor(Math.random() * pts.length)];
+      VX = p[0] + 0.05 * N01(); VY = p[1] + 0.05 * N01(); VZ = p[2] + 0.05 * N01();
+      const I = Math.random() * 0.9 * p[3] * fade;
+      glowV(SWIRL[0] * I, SWIRL[1] * I, SWIRL[2] * I, false);
+    }
+  }
+}
+function drawBurst(tl) {
+  const q = (tl - T_BURST) / D_BURST;
+  if (!(q >= 0 && q < 1)) return;
+  xf(0, TREE_TOP + 0.06, 0); proj();
+  const c0 = PC, r0 = PR, z = VZ - 0.6, L2 = 4 + 22 * (1 - (1 - q) ** 2.5), amp = (1 - q) ** 1.3;
+  for (let k = 0; k < 8; k++) {                          // 8방향으로 번쩍
+    const a = k * Math.PI / 4;
+    for (let j = 0; j < 45; j++) {
+      const d = L2 * j / 44, I = amp * (0.35 + 0.9 * (d / L2) ** 2) * 1.4;
+      glowAt(c0 + d * Math.cos(a), r0 - d * Math.sin(a) * 0.5, z, FLASH[0] * I, FLASH[1] * I, FLASH[2] * I);
+    }
+  }
+  for (let j = 0; j < 40; j++) {
+    const a = Math.random() * TAU, rr = Math.random() * 3.5, I = amp * 1.2;
+    glowAt(c0 + rr * Math.cos(a), r0 + rr * Math.sin(a) * 0.5, z, FLASH[0] * I, FLASH[1] * I, FLASH[2] * I);
+  }
+}
+function drawOrnaments(tl, T) {
+  for (let i = 0; i < N_ORNAMENTS; i++) {
+    const start = T_ORN + i * D_ORN / N_ORNAMENTS, e = (tl - start) / ORN_POP;
+    if (e <= 0) continue;
+    const sc = backOut(Math.min(e, 1)), ctr = ORN.ctr[i], cl = ORN.cl[i], R = ORN_R * sc;   // 톡톡 커지기
+    for (const s of SPHERE) {
+      xf(ctr[0] + s[0] * R, ctr[1] + s[1] * R, ctr[2] + s[2] * R); xfn(s[0], s[1], s[2]);
+      shade(cl[0], cl[1], cl[2], 0.18, 0.95, ORN.sp[i], 24);
+      solid(OR, OG, OB);
+    }
+    xf(ctr[0], ctr[1], ctr[2]); proj();                  // 반짝이는 하이라이트
+    const tw = Math.max(0, Math.sin(ORN.w[i] * T + ORN.ph[i])) ** 10;
+    const pop = Math.exp(-Math.max(tl - start - ORN_POP * 0.5, 0) / 0.12);
+    const I = 0.75 * tw + 1.3 * pop;
+    glowAt(PC - 0.7, PR - 0.35, VZ - ORN_R * 1.2, I, I, I, false);
+  }
+}
+function drawLights(tl, T) {
+  for (let i = 0; i < N_LIGHTS; i++) {
+    const on = T_LIGHTS + LT.u[i] * D_LIGHTS;
+    if (tl < on) continue;                               // 아래부터 켜짐
+    let b = 0.62 + 0.38 * Math.sin(LT.w[i] * T + LT.ph[i]) + 1.3 * Math.exp(-(tl - on) / 0.12);
+    if (tl > T_DONE) {                                   // 줄줄이 달려가는 빛
+      const k = clamp01((tl - T_DONE) / 0.4);
+      const wave = Math.max(0, Math.cos(TAU * (i / 14 - (tl - T_DONE) * 1.4))) ** 6;
+      b = b * (1 - 0.45 * k) + k * 1.5 * wave;
+    }
+    const p = LT.P[i], c = LT.C[i];
+    xf(p[0], p[1], p[2]);
+    glowV(c[0] * b * 1.05, c[1] * b * 1.05, c[2] * b * 1.05);
+  }
+}
+let STAR_M = 0;
+function starShape(dx, dy) {
+  const ang = Math.atan2(-dy, dx) - Math.PI / 2, seg = TAU / 5;
+  STAR_M = (((ang + seg / 2) % seg) + seg) % seg - seg / 2;
+  const rb = 1 - (Math.abs(STAR_M) / (seg / 2)) * (1 - 0.42);
+  return Math.hypot(dx, dy) < rb;
+}
+function drawStar(tl, T) {
+  const e = (tl - T_STAR) / D_STAR;
+  if (e <= 0) return;
+  const sc = backOut(Math.min(e, 1));
+  xf(0, STAR_Y, 0); proj();
+  const c0 = PC, r0 = PR, z = VZ - 0.4, k = CAM_D / (CAM_D + VZ);
+  const Ro = STAR_R * Math.max(SX, 1.6 * SY) * k * sc;
+  if (Ro < 0.4) return;
+  const pop = Math.exp(-Math.max(tl - T_STAR - D_STAR * 0.6, 0) / 0.2), tw = 0.75 + 0.25 * Math.sin(T * 5.3);
+  const cmin = Math.floor(c0 - Ro * 1.1), cmax = Math.ceil(c0 + Ro * 1.1);
+  const rmin = Math.floor(r0 - Ro * 0.6), rmax = Math.ceil(r0 + Ro * 0.6);
+  for (let rr = rmin; rr <= rmax; rr++) for (let cc = cmin; cc <= cmax; cc++) {
+    let cov = 0;
+    for (const oy of [1 / 6, 3 / 6, 5 / 6]) for (const ox of [1 / 6, 3 / 6, 5 / 6]) cov += starShape((cc + ox - c0) / Ro, (rr + oy - r0) / (Ro * 0.5)) ? 1 : 0;
+    const dx = (cc + 0.5 - c0) / Ro, dy = (rr + 0.5 - r0) / (Ro * 0.5);
+    if (cov / 9 >= 0.3) {
+      starShape(dx, dy);
+      const rad = Math.max(Math.hypot(dx, dy), 1e-6), tx = -dy / rad, ty = dx / rad, sg = Math.sign(STAR_M);
+      const n = nrm3(dx / rad * 0.6 + sg * tx * 0.5, -(dy / rad * 0.6 + sg * ty * 0.5), -1);   // 팔마다 한쪽 면은 밝게
+      NX = n[0]; NY = n[1]; NZ = n[2];
+      shade(STAR_GOLD[0], STAR_GOLD[1], STAR_GOLD[2], 0.35, 0.95, 0.6, 12);
+      solidAt(cc + 0.5, rr + 0.5, z, OR * 1.1 + 0.8 * pop, OG * 1.1 + 0.8 * pop, OB * 1.1 + 0.8 * pop);
+    }
+    const d = Math.hypot(dx, dy), I = 0.45 * tw * Math.max(0, 1 - d / 2.2) ** 2;   // 별빛 후광
+    if (I > 0) glowAt(cc + 0.5, rr + 0.5, z, STAR_RAY[0] * I, STAR_RAY[1] * I, STAR_RAY[2] * I, false);
+  }
+  for (let kk = 0; kk < 8; kk++) {                       // 빛살 반짝반짝
+    const a = kk * Math.PI / 4 + Math.PI / 2, main = kk % 2 === 0;
+    const Lr = Ro * (main ? 2.1 + 0.6 * Math.sin(T * 6 + kk) : 1.35 + 0.5 * Math.sin(T * 7.3 + kk * 2));
+    const flick = 0.55 + 0.45 * Math.sin(T * (4 + kk) + kk * 1.7);
+    for (let j = 0; j < 30; j++) {
+      const dd = Ro * 0.6 + (Lr - Ro * 0.6) * j / 29;
+      const I = (1 - (dd - Ro * 0.6) / Math.max(Lr - Ro * 0.6, 1e-6)) ** 1.5 * (main ? 0.9 : 0.6) * flick + pop;
+      glowAt(c0 + dd * Math.cos(a), r0 - dd * Math.sin(a) * 0.5, z, STAR_RAY[0] * I, STAR_RAY[1] * I, STAR_RAY[2] * I, false);
+    }
+  }
+}
+function drawHearts(tl, T, st) {
+  for (let i = 0; i < N_HEARTS; i++) {
+    const ti = T_HEARTS + i * D_HEARTS / N_HEARTS;
+    if (tl < ti) continue;
+    const h = st.hearts[i];
+    xf(h[0], h[1], h[2]); proj();
+    const x = (T * 1.15 + i * 0.37) % 1;                 // 두근(크게) 두근(작게)
+    const beat = Math.exp(-((x / 0.07) ** 2)) + Math.exp(-(((x - 1) / 0.07) ** 2)) + 0.65 * Math.exp(-(((x - 0.22) / 0.07) ** 2));
+    const pop = Math.exp(-(tl - ti) / 0.25), b = Math.min(0.45 + 0.75 * beat + 1.2 * pop, 1.6);
+    ovl.push([PC, PR, VZ - 0.02, HEART, PINK[0] * b, PINK[1] * b, PINK[2] * b]);
+    const g = 0.28 * beat + 0.8 * pop;
+    glowAt(PC, PR, VZ - 0.02, PINK[0] * g, PINK[1] * g, PINK[2] * g);
+  }
+}
+function drawGifts(tl, st) {
+  const n = GIFT_DEFS.length;
+  for (let gi = 0; gi < n; gi++) {
+    const e = (tl - (T_GIFTS + gi * D_GIFTS / n)) / GIFT_RISE;
+    if (e <= 0) continue;
+    const [w, h, d] = GIFT_DEFS[gi], [theta, dist] = GIFT_SLOTS[st.giftSlot[gi]];
+    const yaw = theta * 0.7 + gi, cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const ox = dist * Math.cos(theta), oz = dist * Math.sin(theta);
+    const yoff = -(h + 0.1) * (1 - backOut(Math.min(e, 1)));   // 땅에서 쑥
+    const G = GIFTS[gi], { P, N, C, X } = G;
+    for (let i = 0; i < G.n; i++) {
+      const a = i * 3, wy = P[a + 1] + yoff;
+      if (wy < -0.005) continue;
+      xf(P[a] * cy - P[a + 2] * sy + ox, wy, P[a] * sy + P[a + 2] * cy + oz);
+      xfn(N[a] * cy - N[a + 2] * sy, N[a + 1], N[a] * sy + N[a + 2] * cy);
+      shade(C[a], C[a + 1], C[a + 2], 0.22, 0.9, X[i], 20);
+      solid(OR, OG, OB);
+    }
+    if (e < 1.5) {                                       // 올라올 때 눈가루 반짝
+      const rr = Math.max(w, d) * 0.75, I = 0.6 * (1 - e / 1.5);
+      for (let j = 0; j < 12; j++) {
+        const a = TAU * j / 12 + gi;
+        xf(ox + rr * Math.cos(a), 0.03, oz + rr * Math.sin(a));
+        glowV(SNOW[0] * I, SNOW[1] * I, SNOW[2] * I, false);
+      }
+    }
+  }
+}
+function drawSnow(tl, T) {
+  if (tl < T_SNOW) return;
+  setRot(0);
+  const S = SNOWF;
+  for (let i = 0; i < N_SNOW; i++) {
+    const alpha = clamp01((tl - S.e[i]) / 0.6);          // 사르르 나타나기
+    if (alpha <= 0) continue;
+    const y = 3.0 - ((((T * S.v[i] + S.y0[i]) % 5) + 5) % 5);
+    const x = S.x[i] + 0.09 * Math.sin(S.w[i] * T + S.ph[i]);   // 살랑살랑
+    const z = S.z[i] + 0.05 * Math.cos(S.w[i] * 0.7 * T + S.ph[i]);
+    xf(x, y, z); proj();
+    const near = VZ < -0.5, mid = !near && VZ < 0.6;
+    const bright = (near ? 1.0 : mid ? 0.78 : 0.55) * alpha;
+    if (S.heart[i]) {
+      const k = 0.6 + 0.4 * bright;
+      ovl.push([PC, PR, VZ, HEART, PINK[0] * k, PINK[1] * k, PINK[2] * k]);
+    } else {
+      ovl.push([PC, PR, VZ, near ? 8 : mid ? 7 : 1, SNOW[0] * bright, SNOW[1] * bright, SNOW[2] * bright]);
+    }
+  }
+}
+
+const HALO = [[0, 0, 1], [-1, 0, 0.45], [1, 0, 0.45], [0, -1, 0.22], [0, 1, 0.22]];
+function render(tl, T, st) {
+  const fade = clamp01((LOOP - tl) / 0.45);             // 다시 시작하기 직전 살짝 어두워짐
+  drawSky(T);
+  zbuf.fill(Infinity); glow.fill(0); gN = 0; ovl = [];
+  setRot(rotAngle(T));
+  drawGround(tl); drawTree(tl); drawSwirl(tl); drawBurst(tl); drawOrnaments(tl, T);
+  drawLights(tl, T); drawStar(tl, T); drawHearts(tl, T, st); drawGifts(tl, st);
+  drawSnow(tl, T);
+  for (let k = 0; k < gN; k++) {                         // 빛: 겹치면 더 밝게, 트리 뒤에선 숨기
+    const c0 = Math.floor(gc[k]), r0 = Math.floor(gr[k]), nOff = gh[k] ? 5 : 1;
+    for (let o = 0; o < nOff; o++) {
+      const c = c0 + HALO[o][0], r = r0 + HALO[o][1];
+      if (c < 0 || c >= W || r < 0 || r >= H) continue;
+      const i = r * W + c;
+      if (gz[k] < zbuf[i] + 0.08) { const w = HALO[o][2]; glow[i * 3] += gR[k] * w; glow[i * 3 + 1] += gG[k] * w; glow[i * 3 + 2] += gB[k] * w; }
+    }
+  }
+  const cv = [0, 0, 0];
+  for (let i = 0; i < W * H; i++) {
+    const a = i * 3, sm = zbuf[i] !== Infinity;
+    for (let j = 0; j < 3; j++) {
+      const base = sm ? scol[a + j] * fade + bg[a + j] * (1 - fade) : bg[a + j];
+      cv[j] = base + glow[a + j] * fade;
+    }
+    const v = Math.max(cv[0], cv[1], cv[2]), ex = Math.max(v - 1, 0) * 0.85;   // 아주 밝으면 하얗게
+    const gv = Math.max(glow[a], glow[a + 1], glow[a + 2]) * fade;
+    const solidOn = sm && fade > 0.3, scene = solidOn || gv > 0.03;
+    const lv = scene ? clamp01(v) ** 0.7 : clamp01(v) * 1.3;
+    let idx = Math.min(11, Math.max(0, Math.round(lv * 11)));
+    if (solidOn) idx = Math.max(idx, 1);
+    const sp = special[i];
+    if (sp >= 0 && !solidOn && gv < 0.25) idx = sp;
+    outIdx[i] = idx;
+    for (let j = 0; j < 3; j++) outRGB[a + j] = clamp01(cv[j] + ex) ** 0.8 * 255 + 0.5;
+  }
+  if (fade > 0.05) for (const [cf, rf, z, code, R, G, B] of ovl) {
+    const c = Math.floor(cf), r = Math.floor(rf);
+    if (c < 0 || c >= W || r < 0 || r >= H) continue;
+    const i = r * W + c;
+    if (!(z < zbuf[i])) continue;
+    outIdx[i] = code;
+    outRGB[i * 3] = clamp01(R * fade) ** 0.8 * 255 + 0.5;
+    outRGB[i * 3 + 1] = clamp01(G * fade) ** 0.8 * 255 + 0.5;
+    outRGB[i * 3 + 2] = clamp01(B * fade) ** 0.8 * 255 + 0.5;
+  }
+}
+
+// ═══════════════════════ 캔버스 · 재생 ═══════════════════════
+const $ = id => document.getElementById(id);
+const cvs = $("cv"), ctx = cvs.getContext("2d"), screenEl = $("screen"), logEl = $("log"), outEl = $("out"), cmd = $("cmd");
+let cellW = 8, cellH = 16, playing = false, t0 = 0, lastDraw = -1, loopIdx = -1, state = null, rafId = 0;
+
+function layout() {
+  const w = screenEl.clientWidth, h = screenEl.clientHeight;
+  cellW = Math.max(1, Math.min(w / W, h / (2 * H)));      // 글자 한 칸 = 가로 1 : 세로 2
+  cellH = cellW * 2;
+  const cw = cellW * W, ch = cellH * H, dpr = window.devicePixelRatio || 1;
+  cvs.style.width = cw + "px"; cvs.style.height = ch + "px";
+  cvs.style.left = (w - cw) / 2 + "px"; cvs.style.top = (h - ch) / 2 + "px";
+  cvs.width = Math.round(cw * dpr); cvs.height = Math.round(ch * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function paint() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cellW * W, cellH * H);
+  ctx.font = `${cellH * 0.82}px "JetBrains Mono", ui-monospace, Menlo, monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  let last = "";
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const i = r * W + c, code = outIdx[i];
+    if (!code) continue;
+    const a = i * 3, fs = `rgb(${outRGB[a]},${outRGB[a + 1]},${outRGB[a + 2]})`;
+    if (fs !== last) { ctx.fillStyle = fs; last = fs; }
+    ctx.fillText(CHARS[code], (c + 0.5) * cellW, (r + 0.5) * cellH);
+  }
+}
+function frame(now) {
+  if (!playing) return;
+  rafId = requestAnimationFrame(frame);
+  if (lastDraw >= 0 && now - lastDraw < 1000 / FPS - 2) return;   // 1초에 30번
+  lastDraw = now;
+  const T = (now - t0) / 1000, li = Math.floor(T / LOOP), tl = T - li * LOOP;
+  if (li !== loopIdx) { loopIdx = li; state = newLoopState(li); }
+  render(tl, T, state);
+  paint();
+}
+function startTree() {
+  playing = true; loopIdx = -1; lastDraw = -1;
+  logEl.hidden = true; cvs.hidden = false; $("stop").hidden = false; $("spacer").hidden = true;
+  $("title").textContent = "python3 tree.py — 96×54";
+  layout();
+  t0 = performance.now();
+  rafId = requestAnimationFrame(frame);
+  cvs.focus?.();
+}
+function stopTree() {
+  if (!playing) return;
+  playing = false; cancelAnimationFrame(rafId);
+  cvs.hidden = true; logEl.hidden = false; $("stop").hidden = true; $("spacer").hidden = false;
+  $("title").textContent = "~ — zsh — 96×54";
+  print("^C", "dim");
+  cmd.focus();
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ═══════════════════════ 가짜 터미널 ═══════════════════════
+function print(text, cls) {
+  const p = document.createElement("p");
+  if (cls) p.className = cls;
+  p.textContent = text;
+  outEl.appendChild(p);
+}
+function printNodes(...parts) {
+  const p = document.createElement("p");
+  for (const part of parts) p.append(part);
+  outEl.appendChild(p);
+}
+function span(text, cls) { const s = document.createElement("span"); s.className = cls; s.textContent = text; return s; }
+function suggestBtn(text) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "suggest"; b.textContent = text;
+  b.addEventListener("click", e => { e.stopPropagation(); typeAndRun(text); });
+  return b;
+}
+function welcome() {
+  const d = new Date();
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], mons = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0");
+  print(`Last login: ${days[d.getDay()]} ${mons[d.getMonth()]} ${d.getDate()} ${hh}:${mm} on ttys001`, "dim");
+  print(" ");
+  printNodes(span("  *  ", "gold"), "글자로 그리는 3D 크리스마스트리");
+  print("     이 폴더에 tree.py 가 있어요. 아래 명령을 입력하고 Enter 를 눌러 보세요.", "dim");
+  print(" ");
+  printNodes("     ", suggestBtn("python3 tree.py"), span("   트리 재생 · 끝내기는 Ctrl+C 또는 Esc", "dim"));
+  print(" ");
+  print("     그 밖에: ls  help  clear", "dim");
+  print(" ");
+}
+const history = []; let hIdx = 0;
+function run(raw) {
+  const line = raw.trim().replace(/\s+/g, " ");
+  printNodes(span("~ $ ", "ps"), raw);
+  if (line) { history.push(raw); }
+  hIdx = history.length;
+  if (!line) return;
+  const [c0, ...args] = line.split(" ");
+  if (/^(python3?|py) (\.\/)?tree\.py$/.test(line) || line === "./tree.py") { startTree(); return; }
+  switch (c0) {
+    case "ls": print("tree.py"); break;
+    case "help":
+      print("python3 tree.py   트리 재생 (끝내기: Ctrl+C · Esc · q)");
+      print("ls                파일 목록");
+      print("clear             화면 지우기");
+      print("echo <글자>       글자 그대로 출력");
+      break;
+    case "clear": outEl.textContent = ""; break;
+    case "pwd": print("/home/santa"); break;
+    case "whoami": print("santa"); break;
+    case "date": print(new Date().toString()); break;
+    case "echo": print(args.join(" ")); break;
+    case "cat":
+      if (args[0] === "tree.py") {
+        print("#!/usr/bin/env python3", "dim");
+        print("# 터미널 3D 크리스마스트리 (tree.py)", "dim");
+        print("#   실행: python3 tree.py      끝내기: Ctrl+C", "dim");
+        print("# ... (전체 코드는 생략했어요)", "dim");
+      } else print(`cat: ${args[0] || ""}: No such file or directory`, "err");
+      break;
+    case "python": case "python3":
+      if (!args.length) print("이 웹 터미널에서는 tree.py 만 실행할 수 있어요:  python3 tree.py", "dim");
+      else print(`${c0}: can't open file '${args[0]}': [Errno 2] No such file or directory`, "err");
+      break;
+    case "sudo": print("santa is not in the sudoers file. This incident will be reported to the North Pole.", "err"); break;
+    case "exit": case "logout": print("창이나 탭을 닫으면 끝나요.", "dim"); break;
+    default: print(`zsh: command not found: ${c0}`, "err");
+  }
+}
+let typing = false;
+function typeAndRun(text) {
+  if (typing || playing) return;
+  typing = true; cmd.value = ""; cmd.focus();
+  let i = 0;
+  const step = () => {
+    cmd.value = text.slice(0, ++i);
+    if (i < text.length) setTimeout(step, 45);
+    else setTimeout(() => { typing = false; const v = cmd.value; cmd.value = ""; run(v); logEl.scrollTop = logEl.scrollHeight; }, 220);
+  };
+  setTimeout(step, 120);
+}
+cmd.addEventListener("keydown", e => {
+  if (e.isComposing) return;
+  if (e.key === "Enter") { e.preventDefault(); const v = cmd.value; cmd.value = ""; run(v); logEl.scrollTop = logEl.scrollHeight; }
+  else if (e.key === "ArrowUp") { if (hIdx > 0) { hIdx--; cmd.value = history[hIdx]; } e.preventDefault(); }
+  else if (e.key === "ArrowDown") { if (hIdx < history.length) { hIdx++; cmd.value = history[hIdx] ?? ""; } e.preventDefault(); }
+  else if (e.key === "l" && e.ctrlKey) { e.preventDefault(); outEl.textContent = ""; }
+  else if (e.key === "c" && e.ctrlKey && !window.getSelection()?.toString()) { e.preventDefault(); printNodes(span("~ $ ", "ps"), cmd.value + "^C"); cmd.value = ""; }
+});
+document.addEventListener("keydown", e => {
+  if (!playing) return;
+  if (e.key === "Escape" || e.key === "q" || (e.key === "c" && e.ctrlKey)) { e.preventDefault(); stopTree(); }
+});
+$("stop").addEventListener("click", stopTree);
+logEl.addEventListener("click", () => { if (!window.getSelection()?.toString()) cmd.focus(); });
+new ResizeObserver(() => { if (playing) { layout(); paint(); } }).observe(screenEl);
+
+welcome();
+cmd.focus({ preventScroll: true });
+document.fonts?.load(`16px "JetBrains Mono"`).catch(() => {});
+</script>
+</body>
+</html>
