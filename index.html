@@ -23,6 +23,7 @@
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -800,6 +801,7 @@ function startTree() {
 function stopTree() {
   if (!playing) return;
   playing = false; cancelAnimationFrame(rafId);
+  ctx.clearRect(0, 0, cvs.width, cvs.height);
   cvs.hidden = true; logEl.hidden = false; $("stop").hidden = true; $("spacer").hidden = false;
   $("title").textContent = "~ — zsh — 96×54";
   print("^C", "dim");
