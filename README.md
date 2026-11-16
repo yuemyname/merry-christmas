@@ -21,3 +21,12 @@ python3 tree.py      # 끝내기: Ctrl+C
 
 - 끝내기: `Ctrl+C` · `Esc` · `q`
 - 그 밖의 명령: `ls`, `help`, `clear`, `echo`, `cat tree.py`
+
+
+
+## 결과
+
+
+
+
+
