@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>터미널 크리스마스트리</title>
+<title>Terminal Christmas Tree</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -129,15 +129,15 @@ canvas { position: absolute; display: block; background: #000; }
   <div class="bar">
     <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
     <div class="title" id="title">~ — zsh — 96×54</div>
-    <button class="stop" id="stop" type="button" hidden>^C 끝내기</button>
+    <button class="stop" id="stop" type="button" hidden>^C Quit</button>
     <span class="spacer" id="spacer" aria-hidden="true"></span>
   </div>
   <div class="screen" id="screen">
     <div class="log" id="log" aria-live="polite">
       <div id="out"></div>
-      <div class="row"><span class="ps">~ $</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false" data-lt-active="false" aria-label="명령어 입력"></div>
+      <div class="row"><span class="ps">~ $</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false" data-lt-active="false" aria-label="Command input"></div>
     </div>
-    <canvas id="cv" hidden aria-label="글자로 그린 3D 크리스마스트리 애니메이션"></canvas>
+    <canvas id="cv" hidden aria-label="3D Christmas tree animation drawn with text characters"></canvas>
   </div>
 </div>
 
@@ -834,12 +834,12 @@ function welcome() {
   const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0");
   print(`Last login: ${days[d.getDay()]} ${mons[d.getMonth()]} ${d.getDate()} ${hh}:${mm} on ttys001`, "dim");
   print(" ");
-  printNodes(span("  *  ", "gold"), "글자로 그리는 3D 크리스마스트리");
-  print("     이 폴더에 tree.py 가 있어요. 아래 명령을 입력하고 Enter 를 눌러 보세요.", "dim");
+  printNodes(span("  *  ", "gold"), "A 3D Christmas tree drawn with text characters");
+  print("     tree.py is in this folder. Type the command below and press Enter.", "dim");
   print(" ");
-  printNodes("     ", suggestBtn("python3 tree.py"), span("   트리 재생 · 끝내기는 Ctrl+C 또는 Esc", "dim"));
+  printNodes("     ", suggestBtn("python3 tree.py"), span("   play the tree · quit with Ctrl+C or Esc", "dim"));
   print(" ");
-  print("     그 밖에: ls  help  clear", "dim");
+  print("     also try: ls  help  clear", "dim");
   print(" ");
 }
 const history = []; let hIdx = 0;
@@ -854,10 +854,10 @@ function run(raw) {
   switch (c0) {
     case "ls": print("tree.py"); break;
     case "help":
-      print("python3 tree.py   트리 재생 (끝내기: Ctrl+C · Esc · q)");
-      print("ls                파일 목록");
-      print("clear             화면 지우기");
-      print("echo <글자>       글자 그대로 출력");
+      print("python3 tree.py   play the tree (quit: Ctrl+C · Esc · q)");
+      print("ls                list files");
+      print("clear             clear the screen");
+      print("echo <text>       print the text");
       break;
     case "clear": outEl.textContent = ""; break;
     case "pwd": print("/home/santa"); break;
@@ -867,17 +867,17 @@ function run(raw) {
     case "cat":
       if (args[0] === "tree.py") {
         print("#!/usr/bin/env python3", "dim");
-        print("# 터미널 3D 크리스마스트리 (tree.py)", "dim");
-        print("#   실행: python3 tree.py      끝내기: Ctrl+C", "dim");
-        print("# ... (전체 코드는 생략했어요)", "dim");
+        print("# 3D Christmas tree for the terminal (tree.py)", "dim");
+        print("#   run: python3 tree.py      quit: Ctrl+C", "dim");
+        print("# ... (rest of the file omitted)", "dim");
       } else print(`cat: ${args[0] || ""}: No such file or directory`, "err");
       break;
     case "python": case "python3":
-      if (!args.length) print("이 웹 터미널에서는 tree.py 만 실행할 수 있어요:  python3 tree.py", "dim");
+      if (!args.length) print("This web terminal can only run tree.py:  python3 tree.py", "dim");
       else print(`${c0}: can't open file '${args[0]}': [Errno 2] No such file or directory`, "err");
       break;
     case "sudo": print("santa is not in the sudoers file. This incident will be reported to the North Pole.", "err"); break;
-    case "exit": case "logout": print("창이나 탭을 닫으면 끝나요.", "dim"); break;
+    case "exit": case "logout": print("Close the window or tab to end the session.", "dim"); break;
     default: print(`zsh: command not found: ${c0}`, "err");
   }
 }
