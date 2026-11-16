@@ -124,7 +124,7 @@ canvas { position: absolute; display: block; background: #000; }
 </head>
 <body>
 
-<div class="term" id="term">
+<div class="term" id="term" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false">
   <div class="bar">
     <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
     <div class="title" id="title">~ — zsh — 96×54</div>
@@ -134,7 +134,7 @@ canvas { position: absolute; display: block; background: #000; }
   <div class="screen" id="screen">
     <div class="log" id="log" aria-live="polite">
       <div id="out"></div>
-      <div class="row"><span class="ps">~ $</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="명령어 입력"></div>
+      <div class="row"><span class="ps">~ $</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false" data-lt-active="false" aria-label="명령어 입력"></div>
     </div>
     <canvas id="cv" hidden aria-label="글자로 그린 3D 크리스마스트리 애니메이션"></canvas>
   </div>
